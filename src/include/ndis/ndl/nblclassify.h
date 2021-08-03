@@ -258,7 +258,7 @@ _IRQL_requires_same_
 _Function_class_(NDIS_NBL_CLASSIFICATION_INDEX_CALLBACK)
 SIZE_T
 NDIS_NBL_CLASSIFICATION_INDEX_CALLBACK(
-    _In_ PVOID ClassificationContext,
+    _In_opt_ PVOID ClassificationContext,
     _In_ NET_BUFFER_LIST *Nbl);
 /*++
 
@@ -294,7 +294,7 @@ _IRQL_requires_same_
 _Function_class_(NDIS_NBL_CLASSIFICATION_VALUE_CALLBACK)
 ULONG_PTR
 NDIS_NBL_CLASSIFICATION_VALUE_CALLBACK(
-    _In_ PVOID ClassificationContext,
+    _In_opt_ PVOID ClassificationContext,
     _In_ NET_BUFFER_LIST *Nbl);
 /*++
 
@@ -324,7 +324,7 @@ _IRQL_requires_same_
 _Function_class_(NDIS_NBL_FLUSH_CALLBACK)
 VOID
 NDIS_NBL_FLUSH_CALLBACK(
-    _In_ PVOID FlushContext,
+    _In_opt_ PVOID FlushContext,
     _In_ ULONG_PTR ClassificationResult,
     _In_ NBL_QUEUE *Queue);
 /*++
@@ -351,7 +351,7 @@ _IRQL_requires_same_
 _Function_class_(NDIS_NBL_FLUSH_CALLBACK_WITH_COUNT)
 VOID
 NDIS_NBL_FLUSH_WITH_COUNT_CALLBACK(
-    _In_ PVOID FlushContext,
+    _In_opt_ PVOID FlushContext,
     _In_ ULONG_PTR ClassificationResult,
     _In_ NBL_COUNTED_QUEUE *Queue);
 /*++
