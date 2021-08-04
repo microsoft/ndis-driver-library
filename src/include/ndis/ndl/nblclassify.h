@@ -413,6 +413,7 @@ Arguments:
 
     PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
     ThisIndex = ClassificationCallback(ClassificationContext, Nbl);
     NDIS_ASSERT(ThisIndex == 0 || ThisIndex == 1);
 
@@ -424,6 +425,7 @@ Arguments:
     {
         PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
         ThisIndex = ClassificationCallback(ClassificationContext, Nbl);
         NDIS_ASSERT(ThisIndex == 0 || ThisIndex == 1);
 
@@ -476,6 +478,7 @@ Routine Description:
 
     PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
     ThisIndex = ClassificationCallback(ClassificationContext, Nbl);
     NDIS_ASSERT(ThisIndex == 0 || ThisIndex == 1);
 
@@ -487,6 +490,7 @@ Routine Description:
     {
         PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
         ThisIndex = ClassificationCallback(ClassificationContext, Nbl);
         NDIS_ASSERT(ThisIndex == 0 || ThisIndex == 1);
 
@@ -561,6 +565,7 @@ Arguments:
 
     PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
     ThisIndex = ClassificationCallback(ClassificationContext, Nbl);
     NDIS_ASSERT(ThisIndex < NumberOfQueues);
 
@@ -572,6 +577,7 @@ Arguments:
     {
         PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
         ThisIndex = ClassificationCallback(ClassificationContext, Nbl);
         NDIS_ASSERT(ThisIndex < NumberOfQueues);
 
@@ -629,6 +635,7 @@ Routine Description:
 
     PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
     ThisIndex = ClassificationCallback(ClassificationContext, Nbl);
     NDIS_ASSERT(ThisIndex < NumberOfQueues);
 
@@ -640,6 +647,7 @@ Routine Description:
     {
         PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
         ThisIndex = ClassificationCallback(ClassificationContext, Nbl);
         NDIS_ASSERT(ThisIndex < NumberOfQueues);
 
@@ -705,6 +713,7 @@ Arguments
     NET_BUFFER_LIST *FirstNbl = NblChain;
     NET_BUFFER_LIST *PreviousNbl = FirstNbl;
     NET_BUFFER_LIST *Nbl = FirstNbl;
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
     ULONG_PTR TargetClassification = ClassificationCallback(ClassificationContext, Nbl);
 
     while (TRUE)
@@ -713,17 +722,20 @@ Arguments
         if (Nbl == NULL)
         {
             NdisAppendNblChainToNblQueueFast(&Queue, FirstNbl, PreviousNbl);
+#pragma warning(suppress:6387) // 'FlushContext' could be NULL
             FlushCallback(FlushContext, TargetClassification, &Queue);
             break;
         }
 
         PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
         ULONG_PTR NextClassification = ClassificationCallback(ClassificationContext, Nbl);
         if (NextClassification != TargetClassification)
         {
             PreviousNbl->Next = NULL;
             NdisAppendNblChainToNblQueueFast(&Queue, FirstNbl, PreviousNbl);
+#pragma warning(suppress:6387) // 'FlushContext' could be NULL
             FlushCallback(FlushContext, TargetClassification, &Queue);
 
             NdisInitializeNblQueue(&Queue);
@@ -760,6 +772,7 @@ Routine Description:
     NET_BUFFER_LIST *FirstNbl = NblChain;
     NET_BUFFER_LIST *PreviousNbl = FirstNbl;
     NET_BUFFER_LIST *Nbl = FirstNbl;
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
     ULONG_PTR TargetClassification = ClassificationCallback(ClassificationContext, Nbl);
     SIZE_T Count = 1;
 
@@ -769,12 +782,14 @@ Routine Description:
         if (Nbl == NULL)
         {
             NdisAppendNblChainToNblCountedQueueFast(&Queue, FirstNbl, PreviousNbl, Count);
+#pragma warning(suppress:6387) // 'FlushContext' could be NULL
             FlushCallback(FlushContext, TargetClassification, &Queue);
             break;
         }
 
         PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
         ULONG_PTR NextClassification = ClassificationCallback(ClassificationContext, Nbl);
         if (NextClassification == TargetClassification)
         {
@@ -784,6 +799,7 @@ Routine Description:
         {
             PreviousNbl->Next = NULL;
             NdisAppendNblChainToNblCountedQueueFast(&Queue, FirstNbl, PreviousNbl, Count);
+#pragma warning(suppress:6387) // 'FlushContext' could be NULL
             FlushCallback(FlushContext, TargetClassification, &Queue);
 
             NdisInitializeNblCountedQueue(&Queue);
@@ -845,6 +861,7 @@ Arguments
 
     SIZE_T PreviousIndex = 0;
     NdisInitializeNblQueue(&Queue[PreviousIndex]);
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
     TargetClassification[PreviousIndex] = ClassificationCallback(ClassificationContext, Nbl);
 
     while (TRUE)
@@ -858,6 +875,7 @@ Arguments
 
         PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
         ULONG_PTR NextClassification = ClassificationCallback(ClassificationContext, Nbl);
 
         if (TargetClassification[PreviousIndex] != NextClassification)
@@ -886,6 +904,7 @@ Arguments
             }
 
             const SIZE_T EvictionIndex = (PreviousIndex + 1) % ARRAYSIZE(Queue);
+#pragma warning(suppress:6387) // 'FlushContext' could be NULL
             FlushCallback(FlushContext, TargetClassification[EvictionIndex], &Queue[EvictionIndex]);
 
             FirstNbl = Nbl;
@@ -906,6 +925,7 @@ Arguments
             break;
         }
 
+#pragma warning(suppress:6387) // 'FlushContext' could be NULL
         FlushCallback(FlushContext, TargetClassification[i], &Queue[i]);
     }
 }
@@ -939,6 +959,7 @@ Routine Description:
 
     SIZE_T PreviousIndex = 0;
     NdisInitializeNblCountedQueue(&Queue[PreviousIndex]);
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
     TargetClassification[PreviousIndex] = ClassificationCallback(ClassificationContext, Nbl);
 
     while (TRUE)
@@ -953,6 +974,7 @@ Routine Description:
 
         PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
         ULONG_PTR NextClassification = ClassificationCallback(ClassificationContext, Nbl);
 
         if (TargetClassification[PreviousIndex] == NextClassification)
@@ -987,6 +1009,7 @@ Routine Description:
             }
 
             const SIZE_T EvictionIndex = (PreviousIndex + 1) % ARRAYSIZE(Queue);
+#pragma warning(suppress:6387) // 'FlushContext' could be NULL
             FlushCallback(FlushContext, TargetClassification[EvictionIndex], &Queue[EvictionIndex]);
 
             FirstNbl = Nbl;
@@ -1008,6 +1031,7 @@ Routine Description:
             break;
         }
 
+#pragma warning(suppress:6387) // 'FlushContext' could be NULL
         FlushCallback(FlushContext, TargetClassification[i], &Queue[i]);
     }
 }
@@ -1057,6 +1081,7 @@ Arguments
     NET_BUFFER_LIST *FirstNbl = *NblChain;
     NET_BUFFER_LIST *PreviousNbl = FirstNbl;
     NET_BUFFER_LIST *Nbl = FirstNbl;
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
     ULONG_PTR TargetClassification = ClassificationCallback(ClassificationContext, Nbl);
 
     while (TRUE)
@@ -1070,6 +1095,7 @@ Arguments
 
         PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
         ULONG_PTR NextClassification = ClassificationCallback(ClassificationContext, Nbl);
         if (NextClassification != TargetClassification)
         {
@@ -1115,6 +1141,7 @@ Routine Description:
     NET_BUFFER_LIST *FirstNbl = *NblChain;
     NET_BUFFER_LIST *PreviousNbl = FirstNbl;
     NET_BUFFER_LIST *Nbl = FirstNbl;
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
     ULONG_PTR TargetClassification = ClassificationCallback(ClassificationContext, Nbl);
     SIZE_T Count = 1;
 
@@ -1129,6 +1156,7 @@ Routine Description:
 
         PreFetchCacheLine(PF_TEMPORAL_LEVEL_1, Nbl->Next);
 
+#pragma warning(suppress:6387) // 'ClassificationContext' could be NULL
         ULONG_PTR NextClassification = ClassificationCallback(ClassificationContext, Nbl);
         if (NextClassification != TargetClassification)
         {
