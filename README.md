@@ -195,8 +195,7 @@ Typical usage might look like this:
 ```
 VOID ExamplePartialClassify(NET_BUFFER_LIST *NblChain)
 {
-    while (NblChain != NULL)
-    {
+    while (NblChain != NULL) {
         NBL_QUEUE Nbls;
         ULONG_PTR IPv4Address;
         NdisPartialClassifyNblChainByValue(&NblChain, GetIPv4Address, NULL, &IPv4Address);
@@ -240,9 +239,68 @@ ProcessNbls(PVOID FlushContext, ULONG_PTR IPv4Address, NBL_QUEUE *Queue)
 `NdisClassifyNblChainByValue` might be a tiny bit more efficient if the classification routine is expensive, since it avoids redundant classifications.
 Use whichever one fits your code the best.
 
+## `#include <ndis/ndl/mdl.h>`
+
+[mdl.h](https://github.com/microsoft/ndis-driver-library/blob/main/src/include/ndis/ndl/mdl.h) has routines for operating on MDL chains.
+
+For example, you can count the number of physical pages that are touched by an MDL chain with `MdlChainGetPageCount`.
+
+You can conveniently zero out a whole MDL chain using `MdlChainZeroBuffers`, or you can zero just a part of an MDL chain with `MdlChainZeroBuffersAtOffset`.
+
+If you would like to save some typing, you can use the `MDL_POINTER` type to refer to a specific byte offset into an MDL chain (think `NET_BUFFER::DataOffset`).
+Likewise, you can use `MDL_SPAN` to refer to a specific byte range within an MDL chain (think `NET_BUFFER::DataOffset` combined with `NET_BUFFER::DataLength`).
+All the convenience routines in this header also accept MDL pointers and spans.
+For example, `MdlSpanZeroBuffers` is the span version of `MdlChainZeroBuffersAtOffset`.
+
+Zeroing buffers is fun, but the real nifty feature is the ability to copy data in or out of a flat buffer, or even copy between two MDL chains.
+For example, you can copy 50 bytes from an MDL chain, starting at offset 10:
+
+```
+MDL* MdlChain = . . .;
+SIZE_T Offset = 10;
+UCHAR MyBuffer[50];
+MdlCopyMdlChainAtOffsetToFlatBuffer(MyBuffer, MdlChain, Offset, sizeof(MyBuffer));
+```
+
+This works efficiently, regardless of how gnarly the MDL chain is.
+
+If you want to do something fancy &mdash; like calculate a checksum &mdash; you might not find a built-in routine to do it.
+First, please consider requesting one by filing an [issue](https://github.com/microsoft/ndis-driver-library/issues/new/choose); if it'd be useful to you, it might be useful to others.
+But you don't have to wait for us to implement it; you can quickly build your own routines using the low-level MDL iterator routines.
+
+The low-level routine `MdlChainIterateBuffers` invokes a callback for each non-empty buffer in an MDL chain.
+And once you have that callback, you can reuse it in `MdlSpanIterateBuffers` to iterate over some subset of the MDL chain.
+
+For example, here's how the buffer zeroing is actually implemented:
+
+```
+MDL_BUFFER_OPERATOR ZeroOperator;
+
+_Use_decl_annotations_
+NTSTATUS ZeroOperator(PVOID, MDL_SPAN const* Span)
+{
+    UCHAR* Buffer = MmGetSystemAddressForMdlSafe(Span->Start.Mdl, LowPagePriority);
+    if (!Buffer)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    RtlZeroMemory(Buffer + Span->Start.Offset, Span->Length);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS MdlChainZeroBuffers(MDL* MdlChain)
+{
+    return MdlChainIterateBuffers(MdlChain, ZeroOperator NULL);
+}
+```
+
+We implemented the `ZeroOperator` routine that just does its thing on one contiguous buffer at a time, and the iterator figures out where to call it.
+The exact same operator can be reused in `MdlSpanIterateBuffers`, so you can zero out subsets of MDL chains without having do to all the offset arithemtic yourself.
+
 ## Versioning
 
-Current version: 1.0.0
+Current version: 1.1.0
 
 This project uses semantic versioning (semver.org).
 
@@ -260,6 +318,8 @@ We gladly accept issues here on GitHub.
 [File an issue](https://github.com/microsoft/ndis-driver-library/issues/new/choose) if you spot a bug, need clarification on documentation, or have an idea for a new feature that would be a good fit for this library.
 
 For legal reasons, we can only accept pull requests from Microsoft employees.
+
+If you would like to modify your own fork of the NDL, you may wish to automate the generation of the code: refer to the [template directory](https://github.com/microsoft/ndis-driver-library/tree/main/src/template) for information on how to do that.
 
 ## Code of Conduct
 
