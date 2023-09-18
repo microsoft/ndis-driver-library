@@ -1,0 +1,482 @@
+/*++
+
+    Copyright (c) Microsoft. All rights reserved.
+
+    This code is licensed under the MIT License.
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+    ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+    TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+    PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+Module Name:
+
+    oidrequest.h
+
+Provenance:
+
+    Version 1.1.0 from https://github.com/microsoft/ndis-driver-library
+
+Abstract:
+
+    Utility functions for copying and completing OID requests
+
+Usage:
+
+    If your filter driver never needs to get involved with OID requests at all,
+    simply pass NULL for your OID handlers. You won't need any more code, and
+    NDIS will use an efficient short-circuit to pass all OID requests through
+    your driver:
+
+        NDIS_FILTER_DRIVER_CHARACTERISTICS filterCharacteristics;
+        . . .
+        filterCharacteristics.OidRequestHandler = NULL;
+        filterCharacteristics.OidRequestCompleteHandler = NULL;
+
+    That's it; you're done!
+
+    But if you need to monitor, modify, pend, drop, or issue OID requests, then
+    your filter driver needs to provide handler functions to participate in the
+    OID path. These handlers must include some amount of boilerplate to satisfy
+    the NDIS contract. This header encapsulates most of that boilerplate, so
+    your filter driver can handle common cases with a minimal effort.
+
+    Start with these basic handlers:
+
+        NDIS_FILTER_DRIVER_CHARACTERISTICS filterCharacteristics;
+        . . .
+        filterCharacteristics.OidRequestHandler = MyFilterOidRequest;
+        filterCharacteristics.OidRequestCompleteHandler = MyFilterOidRequestComplete;
+
+        NDIS_STATUS MyFilterOidRequest(
+            NDIS_HANDLE filterModuleContext,
+            NDIS_OID_REQUEST *oid)
+        {
+            MY_FILTER *filter = (MY_FILTER*)filterModuleContext;
+            return NdisFPassthroughOidRequest(filter->ndisHandle, oid, MY_TAG);
+        }
+
+        void MyFilterOidRequestComplete(
+            NDIS_HANDLE filterModuleContext,
+            NDIS_OID_REQUEST *oid,
+            NDIS_STATUS completionStatus)
+        {
+            MY_FILTER *filter = (MY_FILTER*)filterModuleContext;
+            NdisFPassthroughOidRequestComplete(
+                filter->ndisHandle, oid, completionStatus);
+        }
+
+    Now if you need to issue your own OID requests somewhere, you can simply do
+    that with NdisFOidRequestAndWait, and the completion will be handled
+    automatically for you:
+
+        void MyEnablePromiscuousMode(...)
+        {
+            ULONG PacketFilter = NDIS_PACKET_TYPE_PROMISCUOUS;
+            NDIS_OID_REQUEST OidRequest = { 0 };
+
+            OidRequest.Header.Type = NDIS_OBJECT_TYPE_OID_REQUEST;
+            OidRequest.Header.Revision = . . .;
+            OidRequest.Header.Size = sizeof(OidRequest);
+            OidRequest.RequestHandle = filter->ndisHandle;
+            OidRequest.RequestType = NdisRequestSetInformation;
+            OidRequest.PortNumber = NDIS_DEFAULT_PORT_NUMBER;
+            OidRequest.DATA.SET_INFORMATION.Oid = OID_GEN_CURRENT_PACKET_FILTER;
+            OidRequest.DATA.SET_INFORMATION.InformationBuffer = &PacketFilter;
+            OidRequest.DATA.SET_INFORMATION.InformationBufferLength = sizeof(PacketFilter);
+
+            NDIS_STATUS status = NdisFOidRequestAndWait(filter->ndisHandle, &OidRequest);
+            if (NDIS_STATUS_SUCCESS != status)
+            {
+                . . . cope with failure . . .;
+            }
+        }
+
+Table of Contents:
+
+    NdisClearOidResult
+    NdisCopyOidResult
+    NdisFPassthroughOidRequest
+    NdisFPassthroughOidRequestComplete
+    NdisFOidRequestAsync
+    NdisFOidRequestAndWait
+
+Environment:
+
+    Kernel mode
+
+--*/
+#pragma once
+
+//
+// You may replace NDIS_REPORT_FATAL_ERROR if you need to terminate the
+// system in a different manner than a simple __fastfail instruction. Note that
+// you MUST NOT allow execution to continue once a fatal error has been
+// reported; the routines may be in an inconsistent state and are not safe to
+// continue executing.
+//
+#ifndef NDIS_REPORT_FATAL_ERROR
+#  define NDIS_REPORT_FATAL_ERROR() \
+        RtlFailFast(FAST_FAIL_INVALID_ARG)
+#endif
+
+//
+// This structure is used in NDIS_OID_REQUEST::SourceReserved
+//
+typedef struct NDIS_OID_REQUEST_SOURCE_RESERVED_t
+{
+    // If non-NULL, the request this was cloned from.
+    // If NULL, the request is novel and was not cloned.
+    NDIS_OID_REQUEST *OriginalRequest;
+
+    union NDIS_OID_REQUEST_SOURCE_RESERVED_COMPLETION_t
+    {
+        // If non-NULL, a thread is waiting for this OID request's completion.
+        KEVENT *WaitEvent;
+
+        // Receives the ultimate completion status for pended OID requests.
+        NDIS_STATUS Status;
+    } Completion;
+} NDIS_OID_REQUEST_SOURCE_RESERVED;
+
+C_ASSERT(sizeof(NDIS_OID_REQUEST_SOURCE_RESERVED) <= FIELD_SIZE(NDIS_OID_REQUEST, SourceReserved));
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+inline
+void
+NdisClearOidResult(
+    _Inout_ NDIS_OID_REQUEST *OidRequest)
+/*++
+
+Routine Description:
+
+    Zeros out the buffer lengths in an OID request
+
+Arguments:
+
+    OidRequest - The OID request whose buffer length is to be zeroed
+
+--*/
+{
+    switch (OidRequest->RequestType)
+    {
+    case NdisRequestMethod:
+        OidRequest->DATA.METHOD_INFORMATION.BytesRead = 0;
+        OidRequest->DATA.METHOD_INFORMATION.BytesNeeded = 0;
+        OidRequest->DATA.METHOD_INFORMATION.BytesWritten = 0;
+        break;
+
+    case NdisRequestSetInformation:
+        OidRequest->DATA.SET_INFORMATION.BytesRead = 0;
+        OidRequest->DATA.SET_INFORMATION.BytesNeeded = 0;
+        break;
+
+    case NdisRequestQueryInformation:
+    case NdisRequestQueryStatistics:
+    default:
+        OidRequest->DATA.QUERY_INFORMATION.BytesWritten = 0;
+        OidRequest->DATA.QUERY_INFORMATION.BytesNeeded = 0;
+        break;
+    }
+}
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+inline
+void
+NdisCopyOidResult(
+    _Inout_ NDIS_OID_REQUEST *Destination,
+    _In_ NDIS_OID_REQUEST const *Source)
+/*++
+
+Routine Description:
+
+    Copies the buffer length from one OID request to another
+
+Arguments:
+
+    Destination - The OID request to receive the buffer length
+
+    Source - The OID request to provide the buffer length
+
+--*/
+{
+    switch (Source->RequestType)
+    {
+    case NdisRequestMethod:
+        Destination->DATA.METHOD_INFORMATION.OutputBufferLength =
+             Source->DATA.METHOD_INFORMATION.OutputBufferLength;
+        Destination->DATA.METHOD_INFORMATION.BytesRead =
+             Source->DATA.METHOD_INFORMATION.BytesRead;
+        Destination->DATA.METHOD_INFORMATION.BytesNeeded =
+             Source->DATA.METHOD_INFORMATION.BytesNeeded;
+        Destination->DATA.METHOD_INFORMATION.BytesWritten =
+             Source->DATA.METHOD_INFORMATION.BytesWritten;
+        break;
+
+    case NdisRequestSetInformation:
+        Destination->DATA.SET_INFORMATION.BytesRead =
+             Source->DATA.SET_INFORMATION.BytesRead;
+        Destination->DATA.SET_INFORMATION.BytesNeeded =
+             Source->DATA.SET_INFORMATION.BytesNeeded;
+        break;
+
+    case NdisRequestQueryInformation:
+    case NdisRequestQueryStatistics:
+        Destination->DATA.QUERY_INFORMATION.BytesWritten =
+             Source->DATA.QUERY_INFORMATION.BytesWritten;
+        Destination->DATA.QUERY_INFORMATION.BytesNeeded =
+             Source->DATA.QUERY_INFORMATION.BytesNeeded;
+        break;
+    default:
+        break;
+    }
+}
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+inline
+NDIS_STATUS
+NdisFPassthroughOidRequest(
+    _In_ NDIS_HANDLE NdisFilterHandle,
+    _In_ NDIS_OID_REQUEST *OidRequest,
+    _In_ ULONG PoolTag)
+/*++
+
+Routine Description:
+
+    Passes an unmodified OID request from the upper edge of a LWF to the LWF's
+    lower edge
+
+    Example usage:
+
+        NDIS_STATUS MyFilterOidRequest(
+            NDIS_HANDLE filterModuleContext,
+            NDIS_OID_REQUEST *oid)
+        {
+            MY_FILTER *filter = (MY_FILTER*)filterModuleContext;
+            return NdisFPassthroughOidRequest(filter->ndisHandle, oid, MY_TAG);
+        }
+
+    If you use NdisFPassthroughOidRequest, you should pair it with
+    NdisFPassthroughOidRequestComplete in the completion path.
+
+Arguments:
+
+    Destination - The OID request to receive the buffer length
+
+    Source - The OID request to provide the buffer length
+
+Return Value:
+
+    The return value is somewhat opaque to the caller, and should just be
+    returned back to NDIS from your FilterOidRequest handler.
+
+--*/
+{
+    NDIS_OID_REQUEST *Clone = NULL;
+
+    NDIS_STATUS NdisStatus = NdisAllocateCloneOidRequest(
+        NdisFilterHandle,
+        OidRequest,
+        PoolTag,
+        &Clone);
+    if (NDIS_STATUS_SUCCESS != NdisStatus)
+    {
+        NdisClearOidResult(OidRequest);
+        return NdisStatus;
+    }
+
+    NDIS_OID_REQUEST_SOURCE_RESERVED *Context =
+        (NDIS_OID_REQUEST_SOURCE_RESERVED*)&Clone->SourceReserved[0];
+    RtlZeroMemory(Context, sizeof(*Context));
+
+    Context->OriginalRequest = OidRequest;
+
+    Clone->RequestId = OidRequest->RequestId;
+
+    NdisStatus = NdisFOidRequest(NdisFilterHandle, Clone);
+    if (NDIS_STATUS_PENDING != NdisStatus)
+    {
+        NdisCopyOidResult(OidRequest, Clone);
+        NdisFreeCloneOidRequest(NdisFilterHandle, Clone);
+    }
+
+    return NdisStatus;
+}
+
+typedef enum NDIS_OID_REQUEST_COMPLETION_KIND_t
+{
+    NdisOidRequestCompletionKindPassthrough,
+    NdisOidRequestCompletionKindLocal,
+} NDIS_OID_REQUEST_COMPLETION_KIND;
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+inline
+NDIS_OID_REQUEST_COMPLETION_KIND
+NdisFPassthroughOidRequestComplete(
+    _In_ NDIS_HANDLE NdisFilterHandle,
+    _In_ NDIS_OID_REQUEST *OidRequest,
+    _In_ NDIS_STATUS CompletionStatus)
+/*++
+
+Routine Description:
+
+    Handles the completion of an OID request
+
+    Example usage:
+
+        void MyFilterOidRequestComplete(
+            NDIS_HANDLE filterModuleContext,
+            NDIS_OID_REQUEST *oid,
+            NDIS_STATUS completionStatus)
+        {
+            MY_FILTER *filter = (MY_FILTER*)filterModuleContext;
+            NdisFPassthroughOidRequestComplete(
+                filter->ndisHandle, oid, completionStatus);
+        }
+
+    This completion handler may only be used with OIDs that were driven from
+    NdisFPassthroughOidRequest, NdisFOidRequestAsync, or
+    NdisFOidRequestAndWait. If your LWF issues OIDs in other ways, you must
+    ensure these OIDs are not passed to NdisFPassthroughOidRequestComplete.
+
+Arguments:
+
+    NdisFilterHandle - The NDIS handle of your filter module
+
+    OidRequest - The OID request that is being completed
+
+    CompletionStatus - The resulting status of the OID request
+
+Return Value:
+
+    In some cases, you might need to know where the OID request came from. This
+    information is not required in all cases, and it is often correct to ignore
+    the return value of this routine.
+
+    NdisOidRequestCompletionKindPassthrough - the OID request was issued by
+         NdisFPassthroughOidRequest
+
+    NdisOidRequestCompletionKindLocal - the OID request was issued by
+         NdisFOidRequestAsync or NdisFOidRequestAndWait
+
+--*/
+{
+    NDIS_OID_REQUEST_SOURCE_RESERVED *Context =
+        (NDIS_OID_REQUEST_SOURCE_RESERVED*)&OidRequest->SourceReserved[0];
+
+    if (NULL == Context->OriginalRequest)
+    {
+        WriteRelease(&Context->Completion.Status, CompletionStatus);
+        if (NULL != Context->Completion.WaitEvent)
+        {
+            KeSetEvent(Context->Completion.WaitEvent, IO_NO_INCREMENT, FALSE);
+        }
+
+        return NdisOidRequestCompletionKindLocal;
+    }
+    else
+    {
+        NDIS_OID_REQUEST *OriginalRequest = Context->OriginalRequest;
+        NdisCopyOidResult(OriginalRequest, OidRequest);
+        NdisFreeCloneOidRequest(NdisFilterHandle, OidRequest);
+        NdisFOidRequestComplete(NdisFilterHandle, OriginalRequest, CompletionStatus);
+        return NdisOidRequestCompletionKindPassthrough;
+    }
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+inline
+NDIS_STATUS
+NdisFOidRequestAsync(
+    _In_ NDIS_HANDLE NdisFilterHandle,
+    _In_ NDIS_OID_REQUEST *OidRequest)
+/*++
+
+Routine Description:
+
+    Issues a new OID request
+
+    Your LWF's FilterOidRequestComplete handler must use
+    NdisFPassthroughOidRequestComplete to handle completion of OID requests.
+
+Arguments:
+
+    NdisFilterHandle - The NDIS handle of your filter module
+
+    OidRequest - The OID request to issue to the lower level
+
+Return Value:
+
+    NDIS_STATUS_PENDING if the OID request will complete asynchronously, or
+    any other NDIS_STATUS code for synchronous completion
+
+--*/
+{
+    NDIS_OID_REQUEST_SOURCE_RESERVED *Context =
+        (NDIS_OID_REQUEST_SOURCE_RESERVED*)&OidRequest->SourceReserved[0];
+    RtlZeroMemory(Context, sizeof(*Context));
+
+    Context->Completion.Status = NDIS_STATUS_PENDING;
+
+    return NdisFOidRequest(NdisFilterHandle, OidRequest);
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+inline
+NDIS_STATUS
+NdisFOidRequestAndWait(
+    _In_ NDIS_HANDLE NdisFilterHandle,
+    _In_ NDIS_OID_REQUEST *OidRequest)
+/*++
+
+Routine Description:
+
+    Issues a new OID request and waits for it to complete
+
+    Your LWF's FilterOidRequestComplete handler must use
+    NdisFPassthroughOidRequestComplete to handle completion of OID requests.
+
+Arguments:
+
+    NdisFilterHandle - The NDIS handle of your filter module
+
+    OidRequest - The OID request to issue to the lower level
+
+Return Value:
+
+    The completion status of the OID request. This routine never returns
+    NDIS_STATUS_PENDING. (If you want asynchronous processing, use
+    NdisFOidRequestAsync instead.)
+
+--*/
+{
+    if (PASSIVE_LEVEL != KeGetCurrentIrql())
+    {
+        NDIS_REPORT_FATAL_ERROR();
+    }
+
+    NDIS_OID_REQUEST_SOURCE_RESERVED *Context =
+        (NDIS_OID_REQUEST_SOURCE_RESERVED*)&OidRequest->SourceReserved[0];
+    RtlZeroMemory(Context, sizeof(*Context));
+
+    Context->Completion.Status = NDIS_STATUS_PENDING;
+
+    KEVENT WaitEvent;
+    KeInitializeEvent(&WaitEvent, NotificationEvent, FALSE);
+    Context->Completion.WaitEvent = &WaitEvent;
+
+    NDIS_STATUS NdisStatus = NdisFOidRequest(NdisFilterHandle, OidRequest);
+    if (NDIS_STATUS_PENDING == NdisStatus)
+    {
+        NTSTATUS NtStatus = KeWaitForSingleObject(
+            &WaitEvent, Executive, KernelMode, FALSE, NULL);
+        if (STATUS_WAIT_0 != NtStatus)
+        {
+            NDIS_REPORT_FATAL_ERROR();
+        }
+
+        NdisStatus = ReadAcquire(&Context->Completion.Status);
+    }
+
+    return NdisStatus;
+}
+

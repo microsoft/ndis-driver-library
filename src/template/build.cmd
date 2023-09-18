@@ -16,6 +16,7 @@ call :generate ndl nblchain || goto :EOF
 call :generate ndl nblqueue || goto :EOF
 call :generate ndl nblclassify || goto :EOF
 call :generate ndl mdl || goto :EOF
+call :generate ndl oidrequest || goto :EOF
 call :generate compat fileio || goto :EOF
 
 echo Done
