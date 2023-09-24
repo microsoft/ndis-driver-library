@@ -16,6 +16,7 @@ call :generate ndl nblchain || goto :EOF
 call :generate ndl nblqueue || goto :EOF
 call :generate ndl nblclassify || goto :EOF
 call :generate ndl mdl || goto :EOF
+call :generate compat fileio || goto :EOF
 
 echo Done
 
@@ -40,3 +41,4 @@ echo The `t4` command was not found.
 echo Ensure you have this tool installed by running:
 echo     dotnet tool install -g dotnet-t4
 goto :EOF
+

@@ -1,0 +1,399 @@
+<#@ include file="common.tti" #>
+/*++
+
+    Copyright (c) Microsoft. All rights reserved.
+
+    This code is licensed under the MIT License.
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+    ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+    TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+    PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+Module Name:
+
+    FileIO.h
+
+Provenance:
+
+    Version <#= ndlVersion #> from https://github.com/microsoft/ndis-driver-library
+
+Abstract:
+
+    Utility functions implementing File I/O APIs NDIS no longer provides
+    in modern platforms. This is intended to facilitate porting existing
+    drivers, new code should use the kernel APIs directly.
+
+    If NDIS_COMPAT_REPLACE_LEGACY_ROUTINES is set to 1, the utility functions
+    will have aliases identical to the legacy routines. Future versions of
+    NDIS.h will also not provide the legacy function definitions to avoid
+    name conflict.
+
+Table of Contents:
+
+        NdisCompatOpenFile
+        NdisCompatCloseFile
+        NdisCompatMapFile
+        NdisCompatUnmapFile
+
+Environment:
+
+    Kernel mode
+
+--*/
+
+#pragma once
+
+#include <ndis/types.h>
+#include <ndis/status.h>
+#include <ntintsafe.h>
+
+#if defined(NDIS_COMPAT_REPLACE_LEGACY_ROUTINES) && NDIS_COMPAT_REPLACE_LEGACY_ROUTINES == 1
+#define NdisOpenFile NdisCompatOpenFile
+#define NdisCloseFile NdisCompatCloseFile
+#define NdisMapFile NdisCompatMapFile
+#define NdisUnmapFile NdisCompatUnmapFile
+#endif
+
+#ifndef NDIS_COMPAT_TAG_FILE_NAME
+#define NDIS_COMPAT_TAG_FILE_NAME 'nfDN'
+#endif
+
+#ifndef NDIS_COMPAT_TAG_FILE_IMAGE
+#define NDIS_COMPAT_TAG_FILE_IMAGE 'ifDN'
+#endif
+
+#ifndef NDIS_COMPAT_TAG_FILE_DESCRIPTOR
+#define NDIS_COMPAT_TAG_FILE_DESCRIPTOR 'dfDN'
+#endif
+
+struct NDIS_COMPAT_FILE_DESCRIPTOR
+{
+    void *Data;
+    BOOLEAN Mapped;
+};
+
+_IRQL_requires_(PASSIVE_LEVEL)
+inline
+NDIS_STATUS
+NdisCompatCreateFile(
+    _In_ UNICODE_STRING const *FileName,
+    _Out_ HANDLE *NtFileHandle
+)
+{
+    *NtFileHandle = NULL;
+
+    DECLARE_CONST_UNICODE_STRING(pathPrefix, L"\\SystemRoot\\system32\\drivers\\");
+
+    UNICODE_STRING fullFileName = { 0 };
+
+    //
+    // Insert the correct path prefix.
+    //
+    NTSTATUS ntStatus = RtlUShortAdd(
+        pathPrefix.Length,
+        FileName->MaximumLength,
+        &fullFileName.MaximumLength);
+
+    if (STATUS_SUCCESS != ntStatus)
+    {
+        return NDIS_STATUS_BUFFER_OVERFLOW;
+    }
+
+    fullFileName.Buffer = (WCHAR *)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED | POOL_FLAG_UNINITIALIZED,
+        fullFileName.MaximumLength,
+        NDIS_COMPAT_TAG_FILE_NAME);
+
+    if (fullFileName.Buffer == NULL)
+    {
+        return NDIS_STATUS_RESOURCES;
+    }
+
+    ntStatus = RtlAppendUnicodeStringToString(
+        &fullFileName,
+        &pathPrefix);
+
+    if (STATUS_SUCCESS != ntStatus)
+    {
+        ExFreePool(fullFileName.Buffer);
+        return NDIS_STATUS_FAILURE;
+    }
+
+    ntStatus = RtlAppendUnicodeStringToString(
+        &fullFileName,
+        FileName);
+
+    if (STATUS_SUCCESS != ntStatus)
+    {
+        ExFreePool(fullFileName.Buffer);
+        return NDIS_STATUS_FAILURE;
+    }
+
+    OBJECT_ATTRIBUTES objectAttributes = { 0 };
+
+    InitializeObjectAttributes(
+        &objectAttributes,
+        &fullFileName,
+        OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+        NULL,
+        NULL);
+
+    HANDLE ntFileHandle = NULL;
+    IO_STATUS_BLOCK ioStatus = { 0 };
+
+    ntStatus = ZwCreateFile(
+        &ntFileHandle,
+        SYNCHRONIZE | FILE_READ_DATA,
+        &objectAttributes,
+        &ioStatus,
+        NULL,
+        0,
+        FILE_SHARE_READ,
+        FILE_OPEN,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0);
+
+    ExFreePool(fullFileName.Buffer);
+
+    if (STATUS_SUCCESS != ntStatus)
+    {
+        return NDIS_STATUS_FILE_NOT_FOUND;
+    }
+
+    *NtFileHandle = ntFileHandle;
+
+    return NDIS_STATUS_SUCCESS;
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+inline
+NDIS_STATUS
+NdisCompatReadFile(
+    _In_ HANDLE NtFileHandle,
+    _Out_ void **FileImage,
+    _Out_ UINT *FileLength
+)
+{
+    *FileImage = NULL;
+    *FileLength = 0;
+
+    //
+    // Query the object to determine its length.
+    //
+
+    IO_STATUS_BLOCK ioStatus = { 0 };
+    FILE_STANDARD_INFORMATION standardInfo = { 0 };
+
+    NTSTATUS ntStatus = ZwQueryInformationFile(
+        NtFileHandle,
+        &ioStatus,
+        &standardInfo,
+        sizeof(standardInfo),
+        FileStandardInformation);
+
+    if (STATUS_SUCCESS != ntStatus)
+    {
+        return NDIS_STATUS_ERROR_READING_FILE;
+    }
+
+    if (standardInfo.EndOfFile.HighPart != 0)
+    {
+        return NDIS_STATUS_ERROR_READING_FILE;
+    }
+
+    const ULONG lengthOfFile = standardInfo.EndOfFile.LowPart;
+
+    //
+    // Might be corrupted.
+    //
+    if (lengthOfFile < 1)
+    {
+        return NDIS_STATUS_ERROR_READING_FILE;
+    }
+
+    //
+    // Allocate buffer for this file
+    //
+
+    void *fileImage = ExAllocatePool2(
+        POOL_FLAG_NON_PAGED | POOL_FLAG_UNINITIALIZED,
+        lengthOfFile,
+        NDIS_COMPAT_TAG_FILE_IMAGE);
+
+    if (fileImage == NULL)
+    {
+        return NDIS_STATUS_ERROR_READING_FILE;
+    }
+
+    //
+    // Read the file into our buffer.
+    //
+
+    ntStatus = ZwReadFile(
+        NtFileHandle,
+        NULL,
+        NULL,
+        NULL,
+        &ioStatus,
+        fileImage,
+        lengthOfFile,
+        NULL,
+        NULL);
+
+    if (STATUS_SUCCESS != ntStatus || ioStatus.Information != lengthOfFile)
+    {
+        ExFreePool(fileImage);
+        return NDIS_STATUS_ERROR_READING_FILE;
+    }
+
+    *FileImage = fileImage;
+    *FileLength = lengthOfFile;
+
+    return NDIS_STATUS_SUCCESS;
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+inline
+NDIS_STATUS
+NdisCompatOpenFileInner(
+    _Out_ NDIS_HANDLE *FileHandle,
+    _Out_ UINT *FileLength,
+    _In_ UNICODE_STRING const *FileName
+)
+{
+    *FileHandle = NULL;
+    *FileLength = 0;
+
+    HANDLE ntFileHandle = { 0 };
+
+    NDIS_STATUS status = NdisCompatCreateFile(
+        FileName,
+        &ntFileHandle);
+
+    if (NDIS_STATUS_SUCCESS != status)
+    {
+        return status;
+    }
+
+    void *fileImage = NULL;
+    UINT fileLength = 0;
+
+    status = NdisCompatReadFile(
+        ntFileHandle,
+        &fileImage,
+        &fileLength);
+
+    ZwClose(ntFileHandle);
+
+    if (NDIS_STATUS_SUCCESS != status)
+    {
+        return status;
+    }
+
+    //
+    // Allocate a structure to describe the file.
+    //
+    struct NDIS_COMPAT_FILE_DESCRIPTOR *fileDescriptor = (struct NDIS_COMPAT_FILE_DESCRIPTOR *)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
+        sizeof(struct NDIS_COMPAT_FILE_DESCRIPTOR),
+        NDIS_COMPAT_TAG_FILE_DESCRIPTOR);
+
+    if (fileDescriptor == NULL)
+    {
+        ExFreePool(fileImage);
+        return NDIS_STATUS_RESOURCES;
+    }
+
+    fileDescriptor->Data = fileImage;
+    fileDescriptor->Mapped = FALSE;
+
+    *FileHandle = (NDIS_HANDLE)fileDescriptor;
+    *FileLength = fileLength;
+
+    return NDIS_STATUS_SUCCESS;
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+inline
+void
+NdisCompatOpenFile(
+    _Out_ NDIS_STATUS *Status,
+    _Out_ NDIS_HANDLE *FileHandle,
+    _Out_ UINT *FileLength,
+    _In_ UNICODE_STRING const *FileName,
+    _In_ PHYSICAL_ADDRESS HighestAcceptableAddress
+)
+{
+    UNREFERENCED_PARAMETER(HighestAcceptableAddress);
+
+    *Status = NdisCompatOpenFileInner(
+        FileHandle,
+        FileLength,
+        FileName);
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+inline
+void
+NdisCompatCloseFile(
+    _In_ NDIS_HANDLE FileHandle
+)
+{
+    struct NDIS_COMPAT_FILE_DESCRIPTOR *fileDescriptor = (struct NDIS_COMPAT_FILE_DESCRIPTOR *)FileHandle;
+
+    ExFreePool(fileDescriptor->Data);
+    fileDescriptor->Data = NULL;
+
+    ExFreePool(fileDescriptor);
+}
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+inline
+void
+NdisCompatMapFile(
+    _Out_ NDIS_STATUS *Status, 
+    _Out_ void **MappedBuffer,
+    _In_ NDIS_HANDLE FileHandle
+)
+{
+    *MappedBuffer = NULL;
+
+    struct NDIS_COMPAT_FILE_DESCRIPTOR *fileDescriptor = (struct NDIS_COMPAT_FILE_DESCRIPTOR *)FileHandle;
+
+    if (fileDescriptor->Mapped == TRUE)
+    {
+        *Status = NDIS_STATUS_ALREADY_MAPPED;
+    }
+    else
+    {
+        fileDescriptor->Mapped = TRUE;
+
+        *MappedBuffer = fileDescriptor->Data;
+        *Status = NDIS_STATUS_SUCCESS;
+    }
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+inline
+void
+NdisCompatUnmapFile(
+    _In_ NDIS_HANDLE FileHandle
+)
+{
+    struct NDIS_COMPAT_FILE_DESCRIPTOR *fileDescriptor = (struct NDIS_COMPAT_FILE_DESCRIPTOR *)FileHandle;
+
+    fileDescriptor->Mapped = FALSE;
+}
+
+#if defined(NDIS_COMPAT_REPLACE_LEGACY_ROUTINES) && NDIS_COMPAT_REPLACE_LEGACY_ROUTINES == 1
+#define NdisCompatCreateFile DoNotUseDirectly_InsteadUse_NdisOpenFile
+#define NdisCompatReadFile DoNotUseDirectly_InsteadUse_NdisOpenFile
+#define NdisCompatOpenFileInner DoNotUseDirectly_InsteadUse_NdisOpenFile
+#define NDIS_COMPAT_FILE_DESCRIPTOR DoNotUseDirectly_InsteadUse_NdisOpenFile
+#else
+#define NdisCompatCreateFile DoNotUseDirectly_InsteadUse_NdisCompatOpenFile
+#define NdisCompatReadFile DoNotUseDirectly_InsteadUse_NdisCompatOpenFile
+#define NdisCompatOpenFileInner DoNotUseDirectly_InsteadUse_NdisCompatOpenFile
+#define NDIS_COMPAT_FILE_DESCRIPTOR DoNotUseDirectly_InsteadUse_NdisCompatOpenFile
+#endif
