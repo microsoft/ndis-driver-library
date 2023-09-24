@@ -67,7 +67,7 @@ Usage:
         }
 
     Now if you need to issue your own OID requests somewhere, you can simply do
-    that with NdisFOidRequestAndWait, and the completion will be handled
+    that with NdisFIssueOidRequestAndWait, and the completion will be handled
     automatically for you:
 
         void MyEnablePromiscuousMode(...)
@@ -85,7 +85,7 @@ Usage:
             OidRequest.DATA.SET_INFORMATION.InformationBuffer = &PacketFilter;
             OidRequest.DATA.SET_INFORMATION.InformationBufferLength = sizeof(PacketFilter);
 
-            NDIS_STATUS status = NdisFOidRequestAndWait(filter->ndisHandle, &OidRequest);
+            NDIS_STATUS status = NdisFIssueOidRequestAndWait(filter->ndisHandle, &OidRequest);
             if (NDIS_STATUS_SUCCESS != status)
             {
                 . . . cope with failure . . .;
@@ -98,8 +98,8 @@ Table of Contents:
     NdisCopyOidResult
     NdisFPassthroughOidRequest
     NdisFPassthroughOidRequestComplete
-    NdisFOidRequestAsync
-    NdisFOidRequestAndWait
+    NdisFIssueOidRequestAsync
+    NdisFIssueOidRequestAndWait
 
 Environment:
 
@@ -120,23 +120,37 @@ Environment:
         RtlFailFast(FAST_FAIL_INVALID_ARG)
 #endif
 
+typedef enum NDIS_OID_REQUEST_COMPLETION_KIND
+{
+    NdisOidRequestCompletionKindPassthrough,
+    NdisOidRequestCompletionKindLocal,
+} NDIS_OID_REQUEST_COMPLETION_KIND;
+
 //
 // This structure is used in NDIS_OID_REQUEST::SourceReserved
 //
-typedef struct NDIS_OID_REQUEST_SOURCE_RESERVED_t
+typedef struct NDIS_OID_REQUEST_SOURCE_RESERVED
 {
-    // If non-NULL, the request this was cloned from.
-    // If NULL, the request is novel and was not cloned.
-    NDIS_OID_REQUEST *OriginalRequest;
-
-    union NDIS_OID_REQUEST_SOURCE_RESERVED_COMPLETION_t
+    union NDIS_OID_REQUEST_SOURCE_RESERVED_STATUS
     {
-        // If non-NULL, a thread is waiting for this OID request's completion.
-        KEVENT *WaitEvent;
+        // Before completion, determines the type of the Data field below
+        NDIS_OID_REQUEST_COMPLETION_KIND CompletionKind;
 
-        // Receives the ultimate completion status for pended OID requests.
+        // After completion, receives the OID request's completion status.
         NDIS_STATUS Status;
+
+        // Aliased with Status for lock-free updates
+        LONG StatusAsLong;
     } Completion;
+
+    union NDIS_OID_REQUEST_SOURCE_RESERVED_DATA
+    {
+        // The request this was cloned from.
+        NDIS_OID_REQUEST *OriginalRequest;
+
+        // The request this was cloned from.
+        KEVENT *WaitEvent;
+    } Data;
 } NDIS_OID_REQUEST_SOURCE_RESERVED;
 
 C_ASSERT(sizeof(NDIS_OID_REQUEST_SOURCE_RESERVED) <= FIELD_SIZE(NDIS_OID_REQUEST, SourceReserved));
@@ -289,9 +303,8 @@ Return Value:
         (NDIS_OID_REQUEST_SOURCE_RESERVED*)&Clone->SourceReserved[0];
     RtlZeroMemory(Context, sizeof(*Context));
 
-    Context->OriginalRequest = OidRequest;
-
-    Clone->RequestId = OidRequest->RequestId;
+    Context->Completion.CompletionKind = NdisOidRequestCompletionKindPassthrough;
+    Context->Data.OriginalRequest = OidRequest;
 
     NdisStatus = NdisFOidRequest(NdisFilterHandle, Clone);
     if (NDIS_STATUS_PENDING != NdisStatus)
@@ -302,12 +315,6 @@ Return Value:
 
     return NdisStatus;
 }
-
-typedef enum NDIS_OID_REQUEST_COMPLETION_KIND_t
-{
-    NdisOidRequestCompletionKindPassthrough,
-    NdisOidRequestCompletionKindLocal,
-} NDIS_OID_REQUEST_COMPLETION_KIND;
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 inline
@@ -335,8 +342,8 @@ Routine Description:
         }
 
     This completion handler may only be used with OIDs that were driven from
-    NdisFPassthroughOidRequest, NdisFOidRequestAsync, or
-    NdisFOidRequestAndWait. If your LWF issues OIDs in other ways, you must
+    NdisFPassthroughOidRequest, NdisFIssueOidRequestAsync, or
+    NdisFIssueOidRequestAndWait. If your LWF issues OIDs in other ways, you must
     ensure these OIDs are not passed to NdisFPassthroughOidRequestComplete.
 
 Arguments:
@@ -357,37 +364,48 @@ Return Value:
          NdisFPassthroughOidRequest
 
     NdisOidRequestCompletionKindLocal - the OID request was issued by
-         NdisFOidRequestAsync or NdisFOidRequestAndWait
+         NdisFIssueOidRequestAsync or NdisFIssueOidRequestAndWait
 
 --*/
 {
     NDIS_OID_REQUEST_SOURCE_RESERVED *Context =
         (NDIS_OID_REQUEST_SOURCE_RESERVED*)&OidRequest->SourceReserved[0];
 
-    if (NULL == Context->OriginalRequest)
-    {
-        WriteRelease(&Context->Completion.Status, CompletionStatus);
-        if (NULL != Context->Completion.WaitEvent)
-        {
-            KeSetEvent(Context->Completion.WaitEvent, IO_NO_INCREMENT, FALSE);
-        }
+    NDIS_OID_REQUEST_COMPLETION_KIND CompletionKind =
+        Context->Completion.CompletionKind;
 
-        return NdisOidRequestCompletionKindLocal;
-    }
-    else
+    switch (CompletionKind)
     {
-        NDIS_OID_REQUEST *OriginalRequest = Context->OriginalRequest;
-        NdisCopyOidResult(OriginalRequest, OidRequest);
-        NdisFreeCloneOidRequest(NdisFilterHandle, OidRequest);
-        NdisFOidRequestComplete(NdisFilterHandle, OriginalRequest, CompletionStatus);
-        return NdisOidRequestCompletionKindPassthrough;
+    case NdisOidRequestCompletionKindPassthrough:
+        {
+            NDIS_OID_REQUEST *OriginalRequest = Context->Data.OriginalRequest;
+            NdisCopyOidResult(OriginalRequest, OidRequest);
+            NdisFreeCloneOidRequest(NdisFilterHandle, OidRequest);
+            NdisFOidRequestComplete(NdisFilterHandle, OriginalRequest, CompletionStatus);
+        }
+        break;
+
+    case NdisOidRequestCompletionKindLocal:
+        {
+            WriteRelease(&Context->Completion.StatusAsLong, CompletionStatus);
+            if (NULL != Context->Data.WaitEvent)
+            {
+                KeSetEvent(Context->Data.WaitEvent, IO_NO_INCREMENT, FALSE);
+            }
+        }
+        break;
+
+    default:
+        NDIS_REPORT_FATAL_ERROR();
     }
+
+    return CompletionKind;
 }
 
-_IRQL_requires_(PASSIVE_LEVEL)
+_IRQL_requires_max_(DISPATCH_LEVEL)
 inline
 NDIS_STATUS
-NdisFOidRequestAsync(
+NdisFIssueOidRequestAsync(
     _In_ NDIS_HANDLE NdisFilterHandle,
     _In_ NDIS_OID_REQUEST *OidRequest)
 /*++
@@ -416,7 +434,7 @@ Return Value:
         (NDIS_OID_REQUEST_SOURCE_RESERVED*)&OidRequest->SourceReserved[0];
     RtlZeroMemory(Context, sizeof(*Context));
 
-    Context->Completion.Status = NDIS_STATUS_PENDING;
+    Context->Completion.CompletionKind = NdisOidRequestCompletionKindLocal;
 
     return NdisFOidRequest(NdisFilterHandle, OidRequest);
 }
@@ -424,7 +442,7 @@ Return Value:
 _IRQL_requires_(PASSIVE_LEVEL)
 inline
 NDIS_STATUS
-NdisFOidRequestAndWait(
+NdisFIssueOidRequestAndWait(
     _In_ NDIS_HANDLE NdisFilterHandle,
     _In_ NDIS_OID_REQUEST *OidRequest)
 /*++
@@ -446,7 +464,7 @@ Return Value:
 
     The completion status of the OID request. This routine never returns
     NDIS_STATUS_PENDING. (If you want asynchronous processing, use
-    NdisFOidRequestAsync instead.)
+    NdisFIssueOidRequestAsync instead.)
 
 --*/
 {
@@ -459,11 +477,11 @@ Return Value:
         (NDIS_OID_REQUEST_SOURCE_RESERVED*)&OidRequest->SourceReserved[0];
     RtlZeroMemory(Context, sizeof(*Context));
 
-    Context->Completion.Status = NDIS_STATUS_PENDING;
+    Context->Completion.CompletionKind = NdisOidRequestCompletionKindLocal;
 
     KEVENT WaitEvent;
     KeInitializeEvent(&WaitEvent, NotificationEvent, FALSE);
-    Context->Completion.WaitEvent = &WaitEvent;
+    Context->Data.WaitEvent = &WaitEvent;
 
     NDIS_STATUS NdisStatus = NdisFOidRequest(NdisFilterHandle, OidRequest);
     if (NDIS_STATUS_PENDING == NdisStatus)
@@ -475,7 +493,7 @@ Return Value:
             NDIS_REPORT_FATAL_ERROR();
         }
 
-        NdisStatus = ReadAcquire(&Context->Completion.Status);
+        NdisStatus = ReadAcquire(&Context->Completion.StatusAsLong);
     }
 
     return NdisStatus;
