@@ -12,21 +12,21 @@
 where dotnet >NUL || goto :MissingDotnet
 where t4 >NUL || goto :MissingT4
 
-call :generate nblchain || goto :EOF
-call :generate nblqueue || goto :EOF
-call :generate nblclassify || goto :EOF
-call :generate mdl || goto :EOF
+call :generate ndl nblchain || goto :EOF
+call :generate ndl nblqueue || goto :EOF
+call :generate ndl nblclassify || goto :EOF
+call :generate ndl mdl || goto :EOF
 
 echo Done
 
 goto :EOF
 
 :generate
-echo Generating %1.h....
+echo Generating %2.h....
 
 :: We make 2 passes through the file, so we can generate a Table of Contents
-t4 %~dp0\%1.tt -o %TMP%\%1-2.tt && t4 %TMP%\%1-2.tt -o %~dp0\..\include\ndis\ndl\%1.h
-del /q %TMP%\%1-2.tt
+t4 %~dp0\%2.tt -o %TMP%\%2-2.tt && t4 %TMP%\%2-2.tt -o %~dp0\..\include\ndis\%1\%2.h
+del /q %TMP%\%2-2.tt
 goto :EOF
 
 :MissingDotnet
@@ -40,4 +40,3 @@ echo The `t4` command was not found.
 echo Ensure you have this tool installed by running:
 echo     dotnet tool install -g dotnet-t4
 goto :EOF
-
