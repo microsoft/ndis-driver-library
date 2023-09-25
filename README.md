@@ -298,6 +298,60 @@ NTSTATUS MdlChainZeroBuffers(MDL* MdlChain)
 We implemented the `ZeroOperator` routine that just does its thing on one contiguous buffer at a time, and the iterator figures out where to call it.
 The exact same operator can be reused in `MdlSpanIterateBuffers`, so you can zero out subsets of MDL chains without having do to all the offset arithemtic yourself.
 
+## `#include <ndis/ndl/oidrequest.h>`
+
+[oidrequest.h](https://github.com/microsoft/ndis-driver-library/blob/main/src/include/ndis/ndl/oidrequest.h) has routines for operating on OID requests.
+
+If you've ever written a lightweight filter (LWF) driver or intermediate (IM) driver, you've probably noticed that you need to write out some amount of boilerplate to clone OID requests as they pass through your driver.
+For example, the ndislwf sample driver has [this switch statement](https://github.com/microsoft/Windows-driver-samples/blob/ea6fd60b5b94b5f556a2317e5fa4b3659d64c9f9/network/ndis/filter/filter.c#L972), and your LWF probably has it too.
+At a higher level, everyone needs to have similar mechanics for cloning a request, injecting your own requests, waiting for completion, getting the completion status back out, etc.
+
+Now you can lean on us to write that boilerplate for you. Here's an example of a minimal OID path for a LWF driver:
+
+```
+NDIS_STATUS MyFilterOidRequest(
+    NDIS_HANDLE filterModuleContext,
+    NDIS_OID_REQUEST *oid)
+{
+    MY_FILTER *filter = (MY_FILTER*)filterModuleContext;
+    return NdisFPassthroughOidRequest(filter->ndisHandle, oid, MY_POOLTAG);
+}
+
+void MyFilterOidRequestComplete(
+    NDIS_HANDLE filterModuleContext,
+    NDIS_OID_REQUEST *oid,
+    NDIS_STATUS completionStatus)
+{
+    MY_FILTER *filter = (MY_FILTER*)filterModuleContext;
+    NdisFDispatchOidRequestComplete(filter->ndisHandle, oid, completionStatus);
+}
+```
+
+That's all you need. No switch-case, no copying around BytesWritten or whatever.
+
+When you want to inject your own OID requests, it's as easy as calling `NdisFIssueOidRequestAndWait`.
+Our library code will sort out how to wait for completion, so you don't have to worry about asynchronous callbacks.
+
+Although if you *want* asynchronous callbacks, we have you covered: `NdisFIssueOidRequestWithCallback` lets you register a callback for each OID you send, so your driver can be nicely modular.
+
+## `#include <ndis/compat/fileio.h>`
+
+[fileio.h](https://github.com/microsoft/ndis-driver-library/blob/main/src/include/ndis/compat/fileio.h) has a fallback implementation of deprecated NDIS routines.
+
+Historically, NDIS has been a complete driver framework, even including file I/O.
+NDIS is deprecating its non-networking features &mdash; we should all use WDF instead.
+But as NDIS removes support for old platform features, that means you have to update your driver.
+While we would prefer that you update your driver to use the latest WDF routines (e.g. that will help your driver support driver isolation correctly), we also understand that you might not have time to update the driver right now.
+As a fallback, you can include this library's compat header to get back some of the routines that were removed from NDIS.
+
+This header adds back in the following NDIS routines:
+* `NdisCompatOpenFile`
+* `NdisCompatCloseFile`
+* `NdisCompatMapFile`
+* `NdisCompatUnmapFile`
+
+These work exactly like the classic NDIS-exported routines, but now you can compile them into your driver directly, so you won't be affected as NDIS removes its own support for them.
+
 ## Versioning
 
 Current version: 1.1.0
