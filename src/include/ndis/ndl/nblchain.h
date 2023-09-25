@@ -14,7 +14,7 @@ Module Name:
 
 Provenance:
 
-    Version 1.1.0 from https://github.com/microsoft/ndis-driver-library
+    Version 1.2.0 from https://github.com/microsoft/ndis-driver-library
 
 Abstract:
 

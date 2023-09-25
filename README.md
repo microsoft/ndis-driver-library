@@ -354,7 +354,7 @@ These work exactly like the classic NDIS-exported routines, but now you can comp
 
 ## Versioning
 
-Current version: 1.1.0
+Current version: 1.2.0
 
 This project uses semantic versioning (semver.org).
 
