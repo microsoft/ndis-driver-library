@@ -62,7 +62,7 @@ Usage:
             NDIS_STATUS completionStatus)
         {
             MY_FILTER *filter = (MY_FILTER*)filterModuleContext;
-            NdisFPassthroughOidRequestComplete(
+            NdisFDispatchOidRequestComplete(
                 filter->ndisHandle, oid, completionStatus);
         }
 
@@ -94,11 +94,11 @@ Usage:
 
 Table of Contents:
 
-    NdisClearOidResult
-    NdisCopyOidResult
+    NdisClearOidRequestDataLength
+    NdisCopyOidRequestDataLength
     NdisFPassthroughOidRequest
-    NdisFPassthroughOidRequestComplete
-    NdisFIssueOidRequestAsync
+    NdisFDispatchOidRequestComplete
+    NdisFIssueOidRequestWithCallback
     NdisFIssueOidRequestAndWait
 
 Environment:
@@ -120,10 +120,17 @@ Environment:
         RtlFailFast(FAST_FAIL_INVALID_ARG)
 #endif
 
+_Function_class_(NDIS_OID_REQUEST_COMPLETE_CALLBACK)
+typedef void NDIS_OID_REQUEST_COMPLETE_CALLBACK(
+    _In_ void *CallbackContext,
+    _In_ NDIS_OID_REQUEST const *OidRequest,
+    _In_ NDIS_STATUS CompletionStatus);
+
 typedef enum NDIS_OID_REQUEST_COMPLETION_KIND
 {
-    NdisOidRequestCompletionKindPassthrough,
-    NdisOidRequestCompletionKindLocal,
+    NdisOidRequestCompletionKindPassthrough = -1,
+    NdisOidRequestCompletionKindCallback = 0,
+    NdisOidRequestCompletionKindEvent = 1,
 } NDIS_OID_REQUEST_COMPLETION_KIND;
 
 //
@@ -134,7 +141,10 @@ typedef struct NDIS_OID_REQUEST_SOURCE_RESERVED
     union NDIS_OID_REQUEST_SOURCE_RESERVED_STATUS
     {
         // Before completion, determines the type of the Data field below
-        NDIS_OID_REQUEST_COMPLETION_KIND CompletionKind;
+        NDIS_OID_REQUEST_COMPLETION_KIND CompletionKind : 2;
+
+        // Opaque context for callback of NdisOidRequestCompletionKindCallback 
+        void *CallbackContext;
 
         // After completion, receives the OID request's completion status.
         NDIS_STATUS Status;
@@ -145,10 +155,13 @@ typedef struct NDIS_OID_REQUEST_SOURCE_RESERVED
 
     union NDIS_OID_REQUEST_SOURCE_RESERVED_DATA
     {
-        // The request this was cloned from.
+        // NdisOidRequestCompletionKindPassthrough: original OID request
         NDIS_OID_REQUEST *OriginalRequest;
 
-        // The request this was cloned from.
+        // NdisOidRequestCompletionKindCallback: callback function
+        NDIS_OID_REQUEST_COMPLETE_CALLBACK *CallbackRoutine;
+
+        // NdisOidRequestCompletionKindEvent: optional signal
         KEVENT *WaitEvent;
     } Data;
 } NDIS_OID_REQUEST_SOURCE_RESERVED;
@@ -158,7 +171,7 @@ C_ASSERT(sizeof(NDIS_OID_REQUEST_SOURCE_RESERVED) <= FIELD_SIZE(NDIS_OID_REQUEST
 _IRQL_requires_max_(DISPATCH_LEVEL)
 inline
 void
-NdisClearOidResult(
+NdisClearOidRequestDataLength(
     _Inout_ NDIS_OID_REQUEST *OidRequest)
 /*++
 
@@ -197,7 +210,7 @@ Arguments:
 _IRQL_requires_max_(DISPATCH_LEVEL)
 inline
 void
-NdisCopyOidResult(
+NdisCopyOidRequestDataLength(
     _Inout_ NDIS_OID_REQUEST *Destination,
     _In_ NDIS_OID_REQUEST const *Source)
 /*++
@@ -271,7 +284,7 @@ Routine Description:
         }
 
     If you use NdisFPassthroughOidRequest, you should pair it with
-    NdisFPassthroughOidRequestComplete in the completion path.
+    NdisFDispatchOidRequestComplete in the completion path.
 
 Arguments:
 
@@ -295,7 +308,7 @@ Return Value:
         &Clone);
     if (NDIS_STATUS_SUCCESS != NdisStatus)
     {
-        NdisClearOidResult(OidRequest);
+        NdisClearOidRequestDataLength(OidRequest);
         return NdisStatus;
     }
 
@@ -309,7 +322,7 @@ Return Value:
     NdisStatus = NdisFOidRequest(NdisFilterHandle, Clone);
     if (NDIS_STATUS_PENDING != NdisStatus)
     {
-        NdisCopyOidResult(OidRequest, Clone);
+        NdisCopyOidRequestDataLength(OidRequest, Clone);
         NdisFreeCloneOidRequest(NdisFilterHandle, Clone);
     }
 
@@ -319,7 +332,7 @@ Return Value:
 _IRQL_requires_max_(DISPATCH_LEVEL)
 inline
 NDIS_OID_REQUEST_COMPLETION_KIND
-NdisFPassthroughOidRequestComplete(
+NdisFDispatchOidRequestComplete(
     _In_ NDIS_HANDLE NdisFilterHandle,
     _In_ NDIS_OID_REQUEST *OidRequest,
     _In_ NDIS_STATUS CompletionStatus)
@@ -337,14 +350,14 @@ Routine Description:
             NDIS_STATUS completionStatus)
         {
             MY_FILTER *filter = (MY_FILTER*)filterModuleContext;
-            NdisFPassthroughOidRequestComplete(
+            NdisFDispatchOidRequestComplete(
                 filter->ndisHandle, oid, completionStatus);
         }
 
     This completion handler may only be used with OIDs that were driven from
-    NdisFPassthroughOidRequest, NdisFIssueOidRequestAsync, or
-    NdisFIssueOidRequestAndWait. If your LWF issues OIDs in other ways, you must
-    ensure these OIDs are not passed to NdisFPassthroughOidRequestComplete.
+    NdisFPassthroughOidRequest, NdisFIssueOidRequestWithCallback, or
+    NdisFIssueOidRequestAndWait. If your LWF issues OIDs in other ways, you
+    must ensure these OIDs are not passed to NdisFDispatchOidRequestComplete.
 
 Arguments:
 
@@ -360,11 +373,14 @@ Return Value:
     information is not required in all cases, and it is often correct to ignore
     the return value of this routine.
 
+    NdisOidRequestCompletionKindCallback - the OID request was issued by
+         NdisFIssueOidRequestWithCallback
+
+    NdisOidRequestCompletionKindEvent - the OID request was issued by
+         NdisFIssueOidRequestAndWait
+
     NdisOidRequestCompletionKindPassthrough - the OID request was issued by
          NdisFPassthroughOidRequest
-
-    NdisOidRequestCompletionKindLocal - the OID request was issued by
-         NdisFIssueOidRequestAsync or NdisFIssueOidRequestAndWait
 
 --*/
 {
@@ -376,22 +392,31 @@ Return Value:
 
     switch (CompletionKind)
     {
-    case NdisOidRequestCompletionKindPassthrough:
+    case NdisOidRequestCompletionKindCallback:
         {
-            NDIS_OID_REQUEST *OriginalRequest = Context->Data.OriginalRequest;
-            NdisCopyOidResult(OriginalRequest, OidRequest);
-            NdisFreeCloneOidRequest(NdisFilterHandle, OidRequest);
-            NdisFOidRequestComplete(NdisFilterHandle, OriginalRequest, CompletionStatus);
+            Context->Data.CallbackRoutine(
+                Context->Completion.CallbackContext,
+                OidRequest,
+                CompletionStatus);
         }
         break;
 
-    case NdisOidRequestCompletionKindLocal:
+    case NdisOidRequestCompletionKindEvent:
         {
             WriteRelease(&Context->Completion.StatusAsLong, CompletionStatus);
             if (NULL != Context->Data.WaitEvent)
             {
                 KeSetEvent(Context->Data.WaitEvent, IO_NO_INCREMENT, FALSE);
             }
+        }
+        break;
+
+    case NdisOidRequestCompletionKindPassthrough:
+        {
+            NDIS_OID_REQUEST *OriginalRequest = Context->Data.OriginalRequest;
+            NdisCopyOidRequestDataLength(OriginalRequest, OidRequest);
+            NdisFreeCloneOidRequest(NdisFilterHandle, OidRequest);
+            NdisFOidRequestComplete(NdisFilterHandle, OriginalRequest, CompletionStatus);
         }
         break;
 
@@ -405,23 +430,32 @@ Return Value:
 _IRQL_requires_max_(DISPATCH_LEVEL)
 inline
 NDIS_STATUS
-NdisFIssueOidRequestAsync(
+NdisFIssueOidRequestWithCallback(
     _In_ NDIS_HANDLE NdisFilterHandle,
-    _In_ NDIS_OID_REQUEST *OidRequest)
+    _In_ NDIS_OID_REQUEST *OidRequest,
+    _In_ NDIS_OID_REQUEST_COMPLETE_CALLBACK *CallbackRoutine,
+    _In_opt_ void *CallbackContext)
 /*++
 
 Routine Description:
 
-    Issues a new OID request
+    Issues a new OID request, and invokes a callback when the OID request is
+    complete
 
     Your LWF's FilterOidRequestComplete handler must use
-    NdisFPassthroughOidRequestComplete to handle completion of OID requests.
+    NdisFDispatchOidRequestComplete to handle completion of OID requests.
 
 Arguments:
 
     NdisFilterHandle - The NDIS handle of your filter module
 
     OidRequest - The OID request to issue to the lower level
+
+    CallbackRoutine - A callback function to call when the OID request is
+        complete
+
+    CallbackContext - An arbitrary context to pass to the callback
+        The CallbackContext MUST be aligned to at least MAX_NATURAL_ALIGNMENT
 
 Return Value:
 
@@ -434,7 +468,13 @@ Return Value:
         (NDIS_OID_REQUEST_SOURCE_RESERVED*)&OidRequest->SourceReserved[0];
     RtlZeroMemory(Context, sizeof(*Context));
 
-    Context->Completion.CompletionKind = NdisOidRequestCompletionKindLocal;
+    if (0 != (((UINT_PTR)CallbackContext) % MAX_NATURAL_ALIGNMENT)) {
+        NDIS_REPORT_FATAL_ERROR();
+    }
+
+    Context->Completion.CallbackContext = CallbackContext;
+    Context->Data.CallbackRoutine = CallbackRoutine;
+    Context->Completion.CompletionKind = NdisOidRequestCompletionKindCallback;
 
     return NdisFOidRequest(NdisFilterHandle, OidRequest);
 }
@@ -452,7 +492,7 @@ Routine Description:
     Issues a new OID request and waits for it to complete
 
     Your LWF's FilterOidRequestComplete handler must use
-    NdisFPassthroughOidRequestComplete to handle completion of OID requests.
+    NdisFDispatchOidRequestComplete to handle completion of OID requests.
 
 Arguments:
 
@@ -464,11 +504,12 @@ Return Value:
 
     The completion status of the OID request. This routine never returns
     NDIS_STATUS_PENDING. (If you want asynchronous processing, use
-    NdisFIssueOidRequestAsync instead.)
+    NdisFIssueOidRequestWithCallback
+    instead.)
 
 --*/
 {
-    if (PASSIVE_LEVEL != KeGetCurrentIrql())
+    if (APC_LEVEL < KeGetCurrentIrql())
     {
         NDIS_REPORT_FATAL_ERROR();
     }
@@ -477,7 +518,7 @@ Return Value:
         (NDIS_OID_REQUEST_SOURCE_RESERVED*)&OidRequest->SourceReserved[0];
     RtlZeroMemory(Context, sizeof(*Context));
 
-    Context->Completion.CompletionKind = NdisOidRequestCompletionKindLocal;
+    Context->Completion.CompletionKind = NdisOidRequestCompletionKindEvent;
 
     KEVENT WaitEvent;
     KeInitializeEvent(&WaitEvent, NotificationEvent, FALSE);
