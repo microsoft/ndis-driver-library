@@ -110,9 +110,14 @@ So you don't have to feel guilty about a performance tradeoff here: the simpler 
 ## Quick start
 
 All you have to do is place the `src/include` directory into your compiler's include path.
-You can either make this repository a git submodule of your own driver's repository, or just grab the files and copy them directly into your code &mdash; whichever is most convenient for you.
+This is a header-only distribution, so there's nothing to compile.
 
-From there, you only need to include the header file(s) you want to use.
+You can consume this library in whatever way is most convenient for you:
+* add `ndis-driver-library` to your [vcpkg.json](https://github.com/microsoft/vcpkg) (yes, vcpkg works for drivers too!)
+* make this repository a git submodule of your own driver's git repository
+* [download](https://github.com/microsoft/ndis-driver-library/releases) the files in a zip file and plop them directly into your code
+
+From there, you only need to #include the header file(s) you want to use.
 
 ## Header overview
 
