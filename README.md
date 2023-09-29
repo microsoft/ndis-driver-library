@@ -1,5 +1,8 @@
 # The NDIS Driver Library (NDL)
 
+[![version](https://img.shields.io/badge/version-1.2.0-blue)](https://github.com/microsoft/ndis-driver-library/releases)
+[![vcpkg](https://img.shields.io/vcpkg/v/ndis-driver-library)](https://github.com/microsoft/vcpkg/blob/master/ports/ndis-driver-library/vcpkg.json)
+
 The NDIS Driver Library (NDL) is a header-only library that makes it easier to write NDIS drivers.
 
 Features:
