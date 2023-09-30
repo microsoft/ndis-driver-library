@@ -18,7 +18,7 @@ Features:
 If your LWF injects packets on the send path, you must pluck them back out of the send-complete path.
 But cutting apart NBL chains is a tiresome chore &mdash; why not let the library do it for you?
 
-```
+```c
 #include <ndis.h>
 #include <ndis/ndl/nblqueue.h>
 #include <ndis/ndl/nblclassify.h>
@@ -56,7 +56,7 @@ ULONG_PTR IsMyNbl(PVOID Filter, NET_BUFFER_LIST *Nbl)
 ```
 
 Compare that to what a typical LWF might do, when writing the same algorithm by hand:
-```
+```c
 #include <ndis.h>
 
 VOID FilterSendNetBufferListsComplete(NDIS_HANDLE FilterContext, NET_BUFFER_LIST *NblChain, ...)
@@ -144,7 +144,7 @@ While an ordinary NBL chain is just a singly-linked list, the `NBL_QUEUE` tracks
 
 If you're starting out with an NBL chain, you can convert it into a queue:
 
-```
+```c
 void ExampleNblQueue(NET_BUFFER_LIST *NblChain)
 {
     NBL_QUEUE NblQueue;
@@ -200,7 +200,7 @@ As an alternative, `NdisPartialClassifyNblChainByValue` allows you to keep your 
 It accumulates as many similar NBLs as it can, then returns back to you to let you process them.
 Typical usage might look like this:
 
-```
+```c
 VOID ExamplePartialClassify(NET_BUFFER_LIST *NblChain)
 {
     while (NblChain != NULL) {
@@ -224,7 +224,7 @@ VOID ExamplePartialClassify(NET_BUFFER_LIST *NblChain)
 
 By way of comparison, here's how the same logic would work with `NdisClassifyNblChainByValue`:
 
-```
+```c
 NDIS_NBL_FLUSH_CALLBACK ProcessNbls;
 
 VOID ExampleCallbackClassify(NET_BUFFER_LIST *NblChain)
@@ -263,7 +263,7 @@ For example, `MdlSpanZeroBuffers` is the span version of `MdlChainZeroBuffersAtO
 Zeroing buffers is fun, but the real nifty feature is the ability to copy data in or out of a flat buffer, or even copy between two MDL chains.
 For example, you can copy 50 bytes from an MDL chain, starting at offset 10:
 
-```
+```c
 MDL* MdlChain = . . .;
 SIZE_T Offset = 10;
 UCHAR MyBuffer[50];
@@ -281,7 +281,7 @@ And once you have that callback, you can reuse it in `MdlSpanIterateBuffers` to 
 
 For example, here's how the buffer zeroing is actually implemented:
 
-```
+```c
 MDL_BUFFER_OPERATOR ZeroOperator;
 
 _Use_decl_annotations_
@@ -316,7 +316,7 @@ At a higher level, everyone needs to have similar mechanics for cloning a reques
 
 Now you can lean on us to write that boilerplate for you. Here's an example of a minimal OID path for a LWF driver:
 
-```
+```c
 NDIS_STATUS MyFilterOidRequest(
     NDIS_HANDLE filterModuleContext,
     NDIS_OID_REQUEST *oid)
